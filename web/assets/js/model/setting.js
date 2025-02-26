@@ -26,12 +26,13 @@ class AllSetting {
         this.xrayTemplateConfig = "";
         this.secretEnable = false;
         this.subEnable = false;
-        this.subSyncEnable = true;
         this.subListen = "";
         this.subPort = 2096;
         this.subPath = "/sub/";
         this.subJsonPath = "/json/";
         this.subDomain = "";
+        this.externalTrafficInformEnable = false;
+        this.externalTrafficInformURI = "";
         this.subCertFile = "";
         this.subKeyFile = "";
         this.subUpdates = 12;

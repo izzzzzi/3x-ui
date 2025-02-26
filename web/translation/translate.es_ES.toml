@@ -190,7 +190,6 @@
 
 [pages.client]
 "add" = "Agregar Cliente"
-"groupAdd" = "Agregar usuario de suscripción"
 "edit" = "Editar Cliente"
 "submitAdd" = "Agregar Cliente"
 "submitEdit" = "Guardar Cambios"
@@ -288,8 +287,6 @@
 "subSettings" = "Suscripción"
 "subEnable" = "Habilitar Servicio"
 "subEnableDesc" = "Función de suscripción con configuración separada."
-"subSyncEnable" = "Habilitar sincronización de suscripciones"
-"subSyncEnableDesc" = "El tráfico de los clientes con la misma suscripción se sincronizará cada 10 segundos."
 "subListen" = "Listening IP"
 "subListenDesc" = "Dejar en blanco por defecto para monitorear todas las IPs."
 "subPort" = "Puerto de Suscripción"
@@ -309,6 +306,10 @@
 "subShowInfo" = "Mostrar información de uso"
 "subShowInfoDesc" = "Mostrar tráfico restante y fecha después del nombre de configuración."
 "subURI" = "URI de proxy inverso"
+"externalTrafficInformEnable" = "Informe de tráfico externo"
+"externalTrafficInformEnableDesc" = "Informar a la API externa sobre cada actualización de tráfico."
+"externalTrafficInformURI" = "URI de información de tráfico externo"
+"externalTrafficInformURIDesc" = "Las actualizaciones de tráfico se envían a este URI."
 "subURIDesc" = "Cambiar el URI base de la URL de suscripción para usar detrás de los servidores proxy"
 "fragment" = "Fragmentación"
 "fragmentDesc" = "Habilitar la fragmentación para el paquete de saludo de TLS"
