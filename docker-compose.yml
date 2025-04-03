@@ -1,17 +1,84 @@
----
-version: "3"
+version: "3.8"
 
 services:
-  3x-ui:
-    image: ghcr.io/mhsanaei/3x-ui:latest
+  # Сервис 3x-ui
+  xui:
+    # Собираем образ из локального Dockerfile
+    build: .
     container_name: 3x-ui
-    hostname: yourhostname
+    hostname: yourhostname # Можешь изменить на желаемое имя хоста
     volumes:
-      - $PWD/db/:/etc/x-ui/
-      - $PWD/cert/:/root/cert/
+      # Том для конфигурационных файлов x-ui (если нужны, кроме БД)
+      - ./db:/etc/x-ui/
+      # Том для сертификатов SSL
+      - ./cert:/root/cert/
     environment:
+      # Указываем тип базы данных
+      XUI_DB_TYPE: "postgres"
+      # Строка подключения к PostgreSQL (host=db - имя сервиса PostgreSQL)
+      XUI_DB_DSN: "host=db user=xui password=password dbname=xui port=5432 sslmode=disable"
+      # Пароль для pg_dump/psql/pgloader (должен совпадать с паролем в DSN)
+      PGPASSWORD: "password"
+      # Другие переменные окружения
       XRAY_VMESS_AEAD_FORCED: "false"
       X_UI_ENABLE_FAIL2BAN: "true"
-    tty: true
-    network_mode: host
     restart: unless-stopped
+    # Зависит от готовности сервиса db
+    depends_on:
+      db:
+        condition: service_healthy
+    # Подключаем к созданной сети
+    networks:
+      - xui-net
+    # Мы убираем публичные порты, так как будем доступаться через Nginx
+    # ports:
+    #  - "54321:54321"
+
+  # Сервис PostgreSQL
+  db:
+    image: postgres:16-alpine # Используем легковесный образ Alpine
+    container_name: 3x-ui-db
+    environment:
+      POSTGRES_USER: xui
+      POSTGRES_PASSWORD: password # Измени пароль на более надежный
+      POSTGRES_DB: xui
+    volumes:
+      # Том для хранения данных PostgreSQL
+      - pgdata:/var/lib/postgresql/data
+    restart: unless-stopped
+    # Проверка готовности PostgreSQL
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U xui -d xui"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    # Подключаем к созданной сети
+    networks:
+      - xui-net
+
+  # Сервис Nginx в качестве обратного прокси
+  nginx:
+    image: nginx:alpine
+    container_name: 3x-ui-nginx
+    volumes:
+      - ./nginx/conf.d:/etc/nginx/conf.d
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/ssl:/etc/nginx/ssl
+      - ./nginx/html:/usr/share/nginx/html
+    ports:
+      - "80:80"
+      - "443:443"
+    restart: unless-stopped
+    depends_on:
+      - xui
+    networks:
+      - xui-net
+
+# Определяем том для данных PostgreSQL
+volumes:
+  pgdata:
+
+# Определяем сеть для взаимодействия сервисов
+networks:
+  xui-net:
+    driver: bridge

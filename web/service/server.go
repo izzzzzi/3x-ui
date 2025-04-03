@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"log"
 	"mime/multipart"
 	"net/http"
 	"os"
@@ -470,125 +471,269 @@ func (s *ServerService) GetConfigJson() (any, error) {
 }
 
 func (s *ServerService) GetDb() ([]byte, error) {
-	// Update by manually trigger a checkpoint operation
-	err := database.Checkpoint()
-	if err != nil {
-		return nil, err
-	}
-	// Open the file for reading
-	file, err := os.Open(config.GetDBPath())
-	if err != nil {
-		return nil, err
-	}
-	defer file.Close()
+	dbType := config.GetDBType()
 
-	// Read the file contents
-	fileContents, err := io.ReadAll(file)
-	if err != nil {
-		return nil, err
-	}
+	// Для SQLite - экспортируем файл базы данных
+	if dbType == "sqlite" {
+		// Update by manually trigger a checkpoint operation
+		err := database.Checkpoint()
+		if err != nil {
+			return nil, err
+		}
+		// Open the file for reading
+		file, err := os.Open(config.GetDBPath())
+		if err != nil {
+			return nil, err
+		}
+		defer file.Close()
 
-	return fileContents, nil
+		// Read the file contents
+		fileContents, err := io.ReadAll(file)
+		if err != nil {
+			return nil, err
+		}
+
+		return fileContents, nil
+	} else if dbType == "postgres" {
+		// Для PostgreSQL - создаем дамп с помощью pg_dump
+		log.Println("Exporting PostgreSQL database using pg_dump...")
+		// Разбиваем DSN для получения параметров подключения
+		dsn := config.GetDBDSN()
+		parts := make(map[string]string)
+		for _, part := range strings.Split(dsn, " ") {
+			kv := strings.SplitN(part, "=", 2)
+			if len(kv) == 2 {
+				parts[kv[0]] = kv[1]
+			}
+		}
+
+		// Формируем команду pg_dump с параметрами
+		cmd := exec.Command("pg_dump",
+			"-h", parts["host"],
+			"-U", parts["user"],
+			"-d", parts["dbname"],
+			"-p", parts["port"],
+			"--clean",     // Добавляем команды для очистки перед восстановлением
+			"--if-exists") // Не выдавать ошибку при DROP если объекта нет
+
+		// Получаем пароль из DSN или из переменной окружения PGPASSWORD
+		if password, ok := parts["password"]; ok {
+			cmd.Env = append(os.Environ(), fmt.Sprintf("PGPASSWORD=%s", password))
+		}
+
+		var out bytes.Buffer
+		var stderr bytes.Buffer
+		cmd.Stdout = &out
+		cmd.Stderr = &stderr
+		err := cmd.Run()
+		if err != nil {
+			log.Printf("pg_dump error: %v\nStderr: %s", err, stderr.String())
+			return nil, fmt.Errorf("pg_dump failed: %v - %s", err, stderr.String())
+		}
+		log.Println("PostgreSQL database exported successfully.")
+		return out.Bytes(), nil
+	} else {
+		return nil, fmt.Errorf("unsupported database type: %s", dbType)
+	}
 }
 
 func (s *ServerService) ImportDB(file multipart.File) error {
-	// Check if the file is a SQLite database
-	isValidDb, err := database.IsSQLiteDB(file)
+	dbType := config.GetDBType()
+	log.Printf("Importing database for type: %s", dbType)
+
+	// Общая часть: сохраняем файл временно
+	tempFile, err := os.CreateTemp("", "dbimport-*.tmp")
 	if err != nil {
-		return common.NewErrorf("Error checking db file format: %v", err)
+		return common.NewErrorf("Error creating temp file: %v", err)
 	}
-	if !isValidDb {
-		return common.NewError("Invalid db file format")
-	}
+	tempFilePath := tempFile.Name()
+	log.Printf("Saving uploaded file to temporary path: %s", tempFilePath)
+	defer os.Remove(tempFilePath) // Удаляем временный файл в конце
 
-	// Reset the file reader to the beginning
-	_, err = file.Seek(0, 0)
-	if err != nil {
-		return common.NewErrorf("Error resetting file reader: %v", err)
-	}
-
-	// Save the file as temporary file
-	tempPath := fmt.Sprintf("%s.temp", config.GetDBPath())
-	// Remove the existing fallback file (if any) before creating one
-	_, err = os.Stat(tempPath)
-	if err == nil {
-		errRemove := os.Remove(tempPath)
-		if errRemove != nil {
-			return common.NewErrorf("Error removing existing temporary db file: %v", errRemove)
-		}
-	}
-	// Create the temporary file
-	tempFile, err := os.Create(tempPath)
-	if err != nil {
-		return common.NewErrorf("Error creating temporary db file: %v", err)
-	}
-	defer tempFile.Close()
-
-	// Remove temp file before returning
-	defer os.Remove(tempPath)
-
-	// Save uploaded file to temporary file
 	_, err = io.Copy(tempFile, file)
 	if err != nil {
-		return common.NewErrorf("Error saving db: %v", err)
+		tempFile.Close() // Закрываем перед возвратом ошибки
+		return common.NewErrorf("Error saving uploaded file: %v", err)
 	}
-
-	// Check if we can init db or not
-	err = database.InitDB(tempPath)
+	err = tempFile.Close() // Закрываем файл после записи
 	if err != nil {
-		return common.NewErrorf("Error checking db: %v", err)
+		return common.NewErrorf("Error closing temp file: %v", err)
 	}
 
-	// Stop Xray
+	// Проверяем, является ли файл базой данных SQLite
+	checkFile, err := os.Open(tempFilePath)
+	if err != nil {
+		return common.NewErrorf("Error opening temp file for check: %v", err)
+	}
+	isSQLite, err := database.IsSQLiteDB(checkFile)
+	checkFile.Close() // Закрываем файл после проверки
+	if err != nil {
+		return common.NewErrorf("Error checking file format: %v", err)
+	}
+
+	// Останавливаем Xray перед модификацией БД
+	log.Println("Stopping Xray service...")
 	s.StopXrayService()
 
-	// Backup the current database for fallback
-	fallbackPath := fmt.Sprintf("%s.backup", config.GetDBPath())
-	// Remove the existing fallback file (if any)
-	_, err = os.Stat(fallbackPath)
-	if err == nil {
-		errRemove := os.Remove(fallbackPath)
-		if errRemove != nil {
-			return common.NewErrorf("Error removing existing fallback db file: %v", errRemove)
+	// В любом случае, перезапускаем Xray в конце
+	defer func() {
+		log.Println("Restarting Xray service...")
+		err := s.RestartXrayService()
+		if err != nil {
+			log.Printf("ERROR: Failed to restart Xray after import: %v", err)
 		}
-	}
-	// Move the current database to the fallback location
-	err = os.Rename(config.GetDBPath(), fallbackPath)
-	if err != nil {
-		return common.NewErrorf("Error backing up temporary db file: %v", err)
-	}
+	}()
 
-	// Remove the temporary file before returning
-	defer os.Remove(fallbackPath)
-
-	// Move temp to DB path
-	err = os.Rename(tempPath, config.GetDBPath())
-	if err != nil {
-		errRename := os.Rename(fallbackPath, config.GetDBPath())
-		if errRename != nil {
-			return common.NewErrorf("Error moving db file and restoring fallback: %v", errRename)
+	if dbType == "sqlite" {
+		// Логика импорта для SQLite
+		log.Println("Processing SQLite import...")
+		// Проверяем, действительно ли это SQLite
+		if !isSQLite {
+			return common.NewError("Invalid SQLite database format. Only .db files are supported for SQLite.")
 		}
-		return common.NewErrorf("Error moving db file: %v", err)
-	}
 
-	// Migrate DB
-	err = database.InitDB(config.GetDBPath())
-	if err != nil {
-		errRename := os.Rename(fallbackPath, config.GetDBPath())
-		if errRename != nil {
-			return common.NewErrorf("Error migrating db and restoring fallback: %v", errRename)
+		// Бэкапим текущую БД
+		dbPath := config.GetDBPath()
+		fallbackPath := dbPath + ".backup"
+		_ = os.Remove(fallbackPath) // Удаляем старый бэкап, если есть
+		err = os.Rename(dbPath, fallbackPath)
+		// Игнорируем ошибку, если файла не было, но логируем серьезные проблемы
+		if err != nil && !os.IsNotExist(err) {
+			log.Printf("Warning: Failed to backup existing database: %v", err)
+		} else if err == nil {
+			defer os.Remove(fallbackPath) // Удаляем бэкап в конце, если он был создан
 		}
-		return common.NewErrorf("Error migrating db: %v", err)
-	}
-	s.inboundService.MigrateDB()
 
-	// Start Xray
-	err = s.RestartXrayService()
+		// Перемещаем временный файл на место основного файла БД
+		log.Printf("Replacing database file at %s", dbPath)
+		err = copyFile(tempFilePath, dbPath) // Используем копирование вместо Rename для разных ФС
+		if err != nil {
+			// Пытаемся восстановить бэкап, если не удалось скопировать
+			if _, errStat := os.Stat(fallbackPath); errStat == nil {
+				_ = copyFile(fallbackPath, dbPath)
+			}
+			return common.NewErrorf("Error replacing database file: %v", err)
+		}
+
+		return nil
+
+	} else if dbType == "postgres" {
+		// Логика импорта для PostgreSQL
+		log.Println("Processing PostgreSQL import...")
+
+		// Разбираем DSN для получения параметров подключения
+		dsn := config.GetDBDSN()
+		parts := make(map[string]string)
+		for _, part := range strings.Split(dsn, " ") {
+			kv := strings.SplitN(part, "=", 2)
+			if len(kv) == 2 {
+				parts[kv[0]] = kv[1]
+			}
+		}
+
+		// Получаем основные параметры
+		host := parts["host"]
+		user := parts["user"]
+		dbname := parts["dbname"]
+		port := parts["port"]
+		password := parts["password"]
+
+		// Устанавливаем среду с паролем для подключения
+		env := append(os.Environ(), fmt.Sprintf("PGPASSWORD=%s", password))
+
+		if isSQLite {
+			// Миграция SQLite -> PostgreSQL через pgloader
+			log.Printf("Detected SQLite file, checking if pgloader is installed...")
+
+			// Проверяем наличие pgloader
+			checkCmd := exec.Command("which", "pgloader")
+			err = checkCmd.Run()
+			if err != nil {
+				log.Printf("pgloader not found: %v", err)
+				return common.NewError("pgloader is not installed. To migrate from SQLite to PostgreSQL, please install pgloader first. For Alpine: Add pgloader repository and install it manually.")
+			}
+
+			log.Printf("Migrating data using pgloader...")
+
+			// Формируем команду pgloader
+			cmd := exec.Command("pgloader",
+				"--verbose",          // Для детальных логов
+				"--with", "truncate", // Опция для очистки таблиц перед загрузкой
+				tempFilePath, // Путь к временному файлу SQLite
+				fmt.Sprintf("postgresql://%s:%s@%s:%s/%s", user, password, host, port, dbname)) // DSN для PG
+
+			var stdout bytes.Buffer
+			var stderr bytes.Buffer
+			cmd.Stdout = &stdout
+			cmd.Stderr = &stderr
+			cmd.Env = env
+
+			err = cmd.Run()
+			if err != nil {
+				log.Printf("pgloader error: %v\nStderr: %s", err, stderr.String())
+				return common.NewErrorf("pgloader migration failed: %v - %s", err, stderr.String())
+			}
+			log.Println("pgloader migration completed successfully.")
+
+		} else {
+			// Восстановление дампа PostgreSQL через psql
+			log.Printf("Detected PostgreSQL dump file, restoring using psql...")
+
+			// Используем psql для выполнения дампа
+			cmd := exec.Command("psql",
+				"-h", host,
+				"-U", user,
+				"-d", dbname,
+				"-p", port,
+				"-v", "ON_ERROR_STOP=1") // Остановиться при первой ошибке
+
+			// Открываем временный файл для чтения
+			dumpFile, err := os.Open(tempFilePath)
+			if err != nil {
+				return common.NewErrorf("Error opening temp dump file for psql: %v", err)
+			}
+			defer dumpFile.Close()
+
+			cmd.Stdin = dumpFile // Передаем содержимое файла в stdin psql
+			var stderr bytes.Buffer
+			cmd.Stderr = &stderr
+			cmd.Env = env
+
+			err = cmd.Run()
+			if err != nil {
+				log.Printf("psql restore error: %v\nStderr: %s", err, stderr.String())
+				return common.NewErrorf("psql restore failed: %v - %s", err, stderr.String())
+			}
+			log.Println("psql restore completed successfully.")
+		}
+
+		return nil
+	} else {
+		return common.NewError("Unsupported database type for import")
+	}
+}
+
+// Вспомогательная функция для копирования файлов
+func copyFile(src, dst string) error {
+	sourceFileStat, err := os.Stat(src)
 	if err != nil {
-		return common.NewErrorf("Imported DB but Failed to start Xray: %v", err)
+		return err
 	}
-
-	return nil
+	if !sourceFileStat.Mode().IsRegular() {
+		return fmt.Errorf("%s is not a regular file", src)
+	}
+	source, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer source.Close()
+	destination, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	defer destination.Close()
+	_, err = io.Copy(destination, source)
+	return err
 }
 
 func (s *ServerService) GetNewX25519Cert() (any, error) {

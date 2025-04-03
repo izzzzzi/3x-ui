@@ -2,6 +2,8 @@ package database
 
 import (
 	"bytes"
+	"errors"
+	"fmt"
 	"io"
 	"io/fs"
 	"log"
@@ -12,12 +14,14 @@ import (
 	"x-ui/database/model"
 	"x-ui/xray"
 
+	"gorm.io/driver/postgres"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 )
 
 var db *gorm.DB
+var dbType string
 
 const (
 	defaultUsername = "admin"
@@ -66,10 +70,35 @@ func isTableEmpty(tableName string) (bool, error) {
 	return count == 0, err
 }
 
-func InitDB(dbPath string) error {
-	dir := path.Dir(dbPath)
-	err := os.MkdirAll(dir, fs.ModePerm)
-	if err != nil {
+func InitDB() error {
+	dbType = config.GetDBType()
+
+	var dialector gorm.Dialector
+	var err error
+
+	switch dbType {
+	case "sqlite":
+		dbPath := config.GetDBPath()
+		dir := path.Dir(dbPath)
+		err = os.MkdirAll(dir, fs.ModePerm)
+		if err != nil {
+			log.Printf("Error creating db directory: %v", err)
+			return err
+		}
+		dialector = sqlite.Open(dbPath)
+		log.Printf("Initializing SQLite database at: %s", dbPath)
+	case "postgres":
+		dsn := config.GetDBDSN()
+		if dsn == "" {
+			err = errors.New("PostgreSQL DSN (XUI_DB_DSN) is not configured")
+			log.Printf("Error: %v", err)
+			return err
+		}
+		dialector = postgres.Open(dsn)
+		log.Printf("Initializing PostgreSQL database...")
+	default:
+		err = fmt.Errorf("unsupported database type: %s", dbType)
+		log.Printf("Error: %v", err)
 		return err
 	}
 
@@ -84,8 +113,9 @@ func InitDB(dbPath string) error {
 	c := &gorm.Config{
 		Logger: gormLogger,
 	}
-	db, err = gorm.Open(sqlite.Open(dbPath), c)
+	db, err = gorm.Open(dialector, c)
 	if err != nil {
+		log.Printf("Error opening database: %v", err)
 		return err
 	}
 
@@ -96,6 +126,7 @@ func InitDB(dbPath string) error {
 		return err
 	}
 
+	log.Printf("Database initialization completed successfully.")
 	return nil
 }
 
@@ -122,17 +153,21 @@ func IsSQLiteDB(file io.ReaderAt) (bool, error) {
 	signature := []byte("SQLite format 3\x00")
 	buf := make([]byte, len(signature))
 	_, err := file.ReadAt(buf, 0)
-	if err != nil {
+	if err != nil && err != io.EOF {
 		return false, err
 	}
 	return bytes.Equal(buf, signature), nil
 }
 
 func Checkpoint() error {
-	// Update WAL
-	err := db.Exec("PRAGMA wal_checkpoint;").Error
-	if err != nil {
-		return err
+	if dbType == "sqlite" {
+		log.Printf("Running PRAGMA wal_checkpoint for SQLite...")
+		err := db.Exec("PRAGMA wal_checkpoint;").Error
+		if err != nil {
+			log.Printf("Error running PRAGMA wal_checkpoint: %v", err)
+			return err
+		}
+		log.Printf("PRAGMA wal_checkpoint completed.")
 	}
 	return nil
 }

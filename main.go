@@ -38,7 +38,7 @@ func runWebServer() {
 		log.Fatalf("Unknown log level: %v", config.GetLogLevel())
 	}
 
-	err := database.InitDB(config.GetDBPath())
+	err := database.InitDB()
 	if err != nil {
 		log.Fatalf("Error initializing database: %v", err)
 	}
@@ -108,7 +108,7 @@ func runWebServer() {
 }
 
 func resetSetting() {
-	err := database.InitDB(config.GetDBPath())
+	err := database.InitDB()
 	if err != nil {
 		fmt.Println("Failed to initialize database:", err)
 		return
@@ -190,7 +190,7 @@ func updateTgbotEnableSts(status bool) {
 }
 
 func updateTgbotSetting(tgBotToken string, tgBotChatid string, tgBotRuntime string) {
-	err := database.InitDB(config.GetDBPath())
+	err := database.InitDB()
 	if err != nil {
 		fmt.Println("Error initializing database:", err)
 		return
@@ -227,7 +227,7 @@ func updateTgbotSetting(tgBotToken string, tgBotChatid string, tgBotRuntime stri
 }
 
 func updateSetting(port int, username string, password string, webBasePath string, listenIP string) {
-	err := database.InitDB(config.GetDBPath())
+	err := database.InitDB()
 	if err != nil {
 		fmt.Println("Database initialization failed:", err)
 		return
@@ -274,7 +274,7 @@ func updateSetting(port int, username string, password string, webBasePath strin
 }
 
 func updateCert(publicKey string, privateKey string) {
-	err := database.InitDB(config.GetDBPath())
+	err := database.InitDB()
 	if err != nil {
 		fmt.Println(err)
 		return
@@ -334,7 +334,7 @@ func GetListenIP(getListen bool) {
 func migrateDb() {
 	inboundService := service.InboundService{}
 
-	err := database.InitDB(config.GetDBPath())
+	err := database.InitDB()
 	if err != nil {
 		log.Fatal(err)
 	}

@@ -66,6 +66,18 @@ func GetDBPath() string {
 	return fmt.Sprintf("%s/%s.db", GetDBFolderPath(), GetName())
 }
 
+func GetDBType() string {
+	dbType := os.Getenv("XUI_DB_TYPE")
+	if dbType == "" {
+		dbType = "sqlite" // Default to SQLite
+	}
+	return dbType
+}
+
+func GetDBDSN() string {
+	return os.Getenv("XUI_DB_DSN")
+}
+
 func GetLogFolder() string {
 	logFolderPath := os.Getenv("XUI_LOG_FOLDER")
 	if logFolderPath == "" {
